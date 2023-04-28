@@ -30,6 +30,7 @@
 #include "cdce906.h"
 #include "tps56520.h"
 #include <string.h>
+#include "aes.h"
 
 #define FW_VER_MAJOR 0
 #define FW_VER_MINOR 20
@@ -111,8 +112,24 @@ void main_vendor_disable(void)
 /* Set VCC-INT Voltage */
 #define REQ_VCCINT 0x31
 
+/* Size in byte for the batch run */
+#define BUFLEN_BYTES 4
+#define ADDR_BYTES 4
+#define BATCH_CONFIG_HEADER_BYTES 8 
 
-COMPILER_WORD_ALIGNED static uint8_t ctrlbuffer[64];
+#define MAX_STATES_AM 16
+#define MAX_PT_BYTES 256
+#define MAX_K_BYTES 256
+#define MAX_FPT_BYTES 32
+#define MAX_FKEY_BYTES 32
+#define MAX_STATE_BYTES (MAX_PT_BYTES + MAX_K_BYTES + MAX_FPT_BYTES + MAX_FKEY_BYTES)
+
+#define MAX_REFRESH 256
+#define REFRESH_BYTES 4
+
+#define MIN_BUFFER_BYTES (BUFLEN_BYTES + ADDR_BYTES + BATCH_CONFIG_HEADER_BYTES + MAX_REFRESH*REFRESH_BYTES + MAX_STATES_AM*MAX_STATE_BYTES)
+
+COMPILER_WORD_ALIGNED static uint8_t ctrlbuffer[MIN_BUFFER_BYTES]; //
 #define CTRLBUFFER_WORDPTR ((uint32_t *) ((void *)ctrlbuffer))
 
 typedef enum {
@@ -170,46 +187,160 @@ void ctrl_readmem_ctrl(void){
     /* Start Transaction */
 }
 
-void ctrl_writemem_ctrl_sam3u(void){
-    uint32_t buflen = *(CTRLBUFFER_WORDPTR) - 4; // remove the first 4 bytes of the payload who contain the flags
-    uint32_t address = *(CTRLBUFFER_WORDPTR + 1);
-    uint32_t flags = *(CTRLBUFFER_WORDPTR + 2);
 
-    uint8_t * ctrlbuf_payload = (uint8_t *)(CTRLBUFFER_WORDPTR + 3);
-    uint8_t * sam3u_mem_b = (uint8_t *) sam3u_mem;
-
-    /* Do memory write */
-    for(unsigned int i = 0; i < buflen; i++){
-        sam3u_mem_b[i+address] = ctrlbuf_payload[i];
+/* Used to generate a random byte */
+#define MAX_PRNG_IDX 16
+static uint8_t aes_rnd_byte(uint8_t * buf_idx, uint8_t * prng_state, struct AES_ctx * aesctx){
+    if (*buf_idx==MAX_PRNG_IDX){
+        // buffer empty, need to refresh and reset idx 
+        AES_ECB_encrypt(aesctx,prng_state);
+        *buf_idx=0;
     }
+    // Inc index
+    *buf_idx += 1;
+    // Return randomn byte
+    return prng_state[(*buf_idx)-1];
+}
 
-    if ( flags & 0x1 ){ // encryptions have been requested
-        uint32_t seed = sam3u_mem[0]; // load the seed at addr 0
+/* Used for configurable batch runs*/
+void ctrl_writemem_ctrl_sam3u(void){
+    uint32_t buflen = *(CTRLBUFFER_WORDPTR);
+    uint32_t address = *(CTRLBUFFER_WORDPTR + 1);
 
-        for(unsigned int b = 0; b < (flags >> 16); b++){
-            FPGA_setlock(fpga_generic);
+    uint32_t config_glb = *(CTRLBUFFER_WORDPTR + 2);  // 32'h  nrefresh(8bits) | nstate(8bits)  |        nbatch(16bits) 
+    uint32_t config_size = *(CTRLBUFFER_WORDPTR + 3); // 32'h  pt_fsize(8bits) | pt_size(8bits) | key_fsize(8bits) | key_size(8bits)
+    uint32_t status_loop_delay = *(CTRLBUFFER_WORDPTR + 4); // 32'h  pt_fsize(8bits) | pt_size(8bits) | key_fsize(8bits) | key_size(8bits)
+    uint32_t prng_seed = *(CTRLBUFFER_WORDPTR + 5) ;
 
-            // set the inputs key if needed
-            if ((flags >> 1) & 0x1){ // write the key
-                for(unsigned int j = 0; j < 16; j++){
-                    xram[j+0x400+0x100] = seed >> 24;
-                    seed += (seed*seed) | 0x5;
-                }
+    uint8_t * ctrlbuf_payload = (uint8_t *)(CTRLBUFFER_WORDPTR + 6);
+
+    // Fetch control
+    uint16_t nbatch = config_glb & 0xFFFF;
+    uint8_t nstate = (config_glb >> 16 ) & 0xFF;
+    uint8_t nrefresh = (config_glb >> 24 ) & 0xFF;
+
+    uint8_t key_size = config_size & 0xFF;
+    uint8_t key_fsize = (config_size >> 8) & 0xFF;
+    uint8_t pt_size = (config_size >> 16) & 0xFF;
+    uint8_t pt_fsize = (config_size >> 24) & 0xFF;
+
+    // Initialise the AES PRNG
+    struct AES_ctx aesctx;
+    uint8_t prng_key[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    prng_key[0] = prng_seed & 0xff;
+    prng_key[1] = (prng_seed >> 8) & 0xff;
+    prng_key[2] = (prng_seed >> 16) & 0xff;
+    prng_key[3] = (prng_seed >> 24) & 0xff;
+    AES_init_ctx(&aesctx,prng_key);
+    uint8_t prng_state[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    uint8_t rng_index = 0;
+
+    // Could be removed, used to ease readibility
+    uint32_t global_state_size = key_size + key_fsize + pt_size + pt_fsize;
+
+    // Temporary RAM for refresh
+    uint8_t refresh_RAM_state[key_size+pt_size]; 
+    uint16_t radd0, radd1;
+
+    // Perform routine for all cases
+    uint8_t rndbyte;
+    uint8_t mask;
+    uint8_t state_idx;
+
+    // Threshold for rejection sampling of state_idx
+    uint16_t rej_threshold = 256 - (256 % ((uint16_t) nstate));
+    // Let us use reciprocal multiplication, to ensure constant time modulo
+    uint32_t reciprocal = (0x10000 + (uint32_t) nstate - 1) / ((uint32_t) nstate);
+
+    for(uint16_t c=0;c<nbatch;c++) {
+        // Reset bufid to have constant time between runs
+        rng_index = MAX_PRNG_IDX;
+
+        // Generate randomness byte to choose which 
+        // state to use and update random state
+        do {
+            state_idx = aes_rnd_byte(&rng_index, prng_state, &aesctx);
+        } while (state_idx >= rej_threshold);
+        // q = state_idx / nstate
+        uint8_t q = (((uint32_t) state_idx) * reciprocal) >> 16;
+        // state_idx = state_idx % nstate
+        state_idx = state_idx - nstate*q;
+
+        // Lock FPGA
+        FPGA_setlock(fpga_generic);
+
+        // Generate key configuration.
+        for (uint8_t fb=0;fb<key_fsize;fb++){
+            // Load byte where flag are encoded
+            uint8_t fbyte = ctrlbuf_payload[(state_idx*global_state_size)+key_size+pt_size+fb];
+            // FIXME: optimsize remain shit
+            uint16_t remain = key_size - 8*fb;
+            uint8_t max = 0;
+            if (remain >= 8) {
+                max = 8;
+            } else {
+                max = remain;
             }
-            // set the inputs pt if needed
-            if ((flags >> 2) & 0x1){ // write the pts
-                for(unsigned int j = 0; j < 16; j++){
-                    xram[j+0x400+0x200] = seed >> 24;
-                    seed += (seed*seed) | 0x5;
-                }
+            // Read the flags
+            for (uint8_t i=0;i<max;i++) {
+                // Check if randomness should be generated
+                rndbyte = aes_rnd_byte(&rng_index, prng_state, &aesctx);
+                mask = 0 - ((fbyte>>i) & 0x1);
+                refresh_RAM_state[8*fb+i] = ctrlbuf_payload[(state_idx*global_state_size)+8*fb+i] ^ (mask & rndbyte);
             }
-            FPGA_setlock(fpga_unlocked);
-
-            gpio_set_pin_high(FPGA_TRIGGER_GPIO);
-            delay_cycles(50);
-            gpio_set_pin_low(FPGA_TRIGGER_GPIO);
         }
 
+        // Generate pt configuration.
+        for (uint8_t fb=0;fb<pt_fsize;fb++){
+            // Load byte where flag are encoded
+            uint8_t fbyte = ctrlbuf_payload[(state_idx*global_state_size)+key_size+pt_size+key_fsize+fb];
+            // FIXME: optimsize remain shit
+            uint16_t remain = pt_size - 8*fb;
+            uint8_t max = 0;
+            if (remain >= 8) {
+                max = 8;
+            } else {
+                max = remain;
+            }
+            // Read the flags
+            for (uint8_t i=0;i<max;i++) {
+                rndbyte = aes_rnd_byte(&rng_index, prng_state, &aesctx);
+                mask = 0 - ((fbyte>>i) & 0x1);
+                refresh_RAM_state[key_size+8*fb+i] = ctrlbuf_payload[(state_idx*global_state_size)+key_size+8*fb+i] ^ (mask & rndbyte);
+            }
+        }
+
+        // Refresh mechanism
+        for (uint8_t i=0;i<nrefresh;i++) { 
+            // Fetch refreshes addresses
+            radd0 = ctrlbuf_payload[(nstate*global_state_size)+4*i] | (ctrlbuf_payload[(nstate*global_state_size)+4*i+1] << 8); 
+            radd1 = ctrlbuf_payload[(nstate*global_state_size)+4*i+2] | (ctrlbuf_payload[(nstate*global_state_size)+4*i+3] << 8); 
+            // Generate random byte and update random state
+            rndbyte = aes_rnd_byte(&rng_index, prng_state, &aesctx);
+            // Refresh 
+            refresh_RAM_state[radd0] ^= rndbyte;
+            refresh_RAM_state[radd1] ^= rndbyte;
+        }
+
+        // Write run data to FPGA
+        for (uint8_t i=0;i<key_size;i++) {
+            xram[0x400+0x100+i]=refresh_RAM_state[i];
+        }
+        for (uint8_t i=0;i<pt_size;i++) {
+            xram[0x400+0x200+i]=refresh_RAM_state[key_size+i];
+        }
+
+        // Start one FPGA run
+        FPGA_setlock(fpga_unlocked); 
+
+
+        gpio_set_pin_high(FPGA_TRIGGER_GPIO);
+        delay_cycles(50);
+        gpio_set_pin_low(FPGA_TRIGGER_GPIO);
+        uint8_t done_status = 0;
+        while(done_status==0) {
+            done_status = gpio_pin_is_high(PIN_EBI_DATA_BUS_D0);
+        }
     }
 
 }

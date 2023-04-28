@@ -139,6 +139,7 @@ C_SRCS +=  \
 ../src/usart_driver.c \
 ../src/usb.c \
 ../src/usb_xmem.c \
+../src/aes.c \
 ../src/ASF/sam/drivers/chipid/chipid.c \
 ../src/ASF/sam/drivers/efc/efc.c \
 ../src/ASF/sam/drivers/tc/tc.c \
@@ -191,6 +192,7 @@ src/tasks.o \
 src/tps56520.o \
 src/usart_driver.o \
 src/usb.o \
+src/aes.o \
 src/usb_xmem.o \
 src/ASF/sam/drivers/chipid/chipid.o \
 src/ASF/sam/drivers/efc/efc.o \
@@ -237,6 +239,7 @@ src/tasks.o \
 src/tps56520.o \
 src/usart_driver.o \
 src/usb.o \
+src/aes.o \
 src/usb_xmem.o \
 src/ASF/sam/drivers/chipid/chipid.o \
 src/ASF/sam/drivers/efc/efc.o \
@@ -283,6 +286,7 @@ src/tasks.d \
 src/tps56520.d \
 src/usart_driver.d \
 src/usb.d \
+src/aes.d \
 src/usb_xmem.d \
 src/ASF/sam/drivers/chipid/chipid.d \
 src/ASF/sam/drivers/efc/efc.d \
@@ -329,6 +333,7 @@ src/tasks.d \
 src/tps56520.d \
 src/usart_driver.d \
 src/usb.d \
+src/aes.d \
 src/usb_xmem.d \
 src/ASF/sam/drivers/chipid/chipid.d \
 src/ASF/sam/drivers/efc/efc.d \
