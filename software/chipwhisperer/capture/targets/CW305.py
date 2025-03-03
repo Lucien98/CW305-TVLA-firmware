@@ -255,8 +255,8 @@ class CW305(TargetTemplate):
 
     def readOutput(self):
         """"Read output from FPGA"""
-        data = self.fpga_read(0x200, 16)
-        data = data[::-1]
+        data = self.fpga_read(0x200, 32)
+        # data = data[::-1]
         #self.newInputData.emit(util.list2hexstr(data))
         return data
 
@@ -435,10 +435,10 @@ class CW305(TargetTemplate):
                 nstate (int): The number of configurations to be run in parallel (default 1, up to 255 included).
                 key_size (int): Size of the key word in bytes (default 16, up to 255 included).
                 pt_size (int): Size of the text word in bytes (default 16, up to 255 included).
-                init_key (numpy uin8 array of shape [nbatch,key_size]): The default values of the key for each configuration. (key_size up to 255 included)
-                init_pt (numpy uint8 array of shape [nbatch,pt_size]): The default values of the test for each configuration. (pt_size up to 255 included)
-                flags_key (numpy uint8 array of shape [nbatch,key_size]): The configuration flag of each key byte. 
-                flags_pt (numpy uint8 array of shape [nbatch,pt_size]): The configuration flag of each pt byte. 
+                init_key (numpy uin8 array of shape [nstate,key_size]): The default values of the key for each configuration. (key_size up to 255 included)
+                init_pt (numpy uint8 array of shape [nstate,pt_size]): The default values of the test for each configuration. (pt_size up to 255 included)
+                flags_key (numpy uint8 array of shape [nstate,key_size]): The configuration flag of each key byte. 
+                flags_pt (numpy uint8 array of shape [nstate,pt_size]): The configuration flag of each pt byte. 
                 seed (int): random int32 seed for the PRG.
         """
         ######## Some useful functions
@@ -562,7 +562,7 @@ class CW305(TargetTemplate):
                 flags_key[i,:].astype(bool),
                 flags_pt[i,:].astype(bool)
                 ))
-
+        # print("")
         # Add the refresh encoding
         ref_encoding = encode_refreshes(refreshes,key_size)
         dpay.extend(ref_encoding)
@@ -581,10 +581,33 @@ class CW305(TargetTemplate):
             ))
         data.extend(packuint32(delay_status_loop_4B))
         data.extend(packuint32(seed))
-        data.extend(dpay)
+        for i, d in  enumerate(data):
+            print("0x%x" % d, end=", ")
+            if ((i + 1) % 16) == 0:
+                print()
+        print()
+        for i, d in  enumerate(dpay):
+            print("0x%x" % d, end=", ")
+            if ((i + 1) % 16) == 0:
+                print()
+        print()
 
+        print("data size = ", len(data))
+        data.extend(dpay)
+        print("dpay size = ", len(dpay))
+        packsize = 40
+        f = lambda a:map(lambda b:a[b:b+packsize],range(0,len(a),packsize))
+        print(type(data))
+
+        print(len(data))
+        datas = f(data)
         # Write to controller
-        self.sam3u_write(0,data)
+        # self.sam3u_write(0,data)
+        for  i, d in enumerate(datas):
+            print(i, len(d))
+            self.sam3u_write(i*packsize,d)
+            time.sleep(0.67)
+            if i == 0: break
 
         #### Predict values
         state_used = numpy.zeros([1,nbatch],dtype=numpy.uint8)
@@ -648,8 +671,8 @@ class CW305(TargetTemplate):
         """
         if addr < self._woffset_sam3U:
             raise IOError("Write to read-only location: 0x%04x"%addr)
-        #if len(data) > (256+addr):
-        #    raise IOError("Write will overflow at location: 0x%04x"%(256))
+        if len(data) > (256+addr):
+           raise IOError("Write will overflow at location: 0x%04x"%(256))
 
         return self._naeusb.cmdWriteSam3U(addr, data)
 

@@ -2,7 +2,7 @@ from chipwhisperer.capture.targets.CW305 import CW305
 import matplotlib.pyplot as plt
 import chipwhisperer as cw
 from tqdm import tqdm
-from Crypto.Cipher import AES
+from Cryptodome.Cipher import AES
 import numpy as np
 import time
 
@@ -148,14 +148,14 @@ plt.figure()
 colors = ["r","g","b","m"]
 plt.subplot(211)
 for i,(label,tp) in enumerate(zip(labels,tp_all)):
-    plt.loglog(TESTED_BATCHSIZE,tp[0],label=label,basex=2,basey=10,color=colors[i])
+    plt.loglog(TESTED_BATCHSIZE,tp[0],label=label,color=colors[i]) # basex=2,basey=10,
 plt.ylabel("Enc/sec with batchRun")
 plt.legend()
 plt.grid(True,which="both",ls="--")
 
 plt.subplot(212)
 for i,(label,tp) in enumerate(zip(labels,tp_all)):
-    plt.loglog(TESTED_BATCHSIZE,np.zeros(len(TESTED_BATCHSIZE)),basex=2,basey=10,color=colors[i])
+    plt.loglog(TESTED_BATCHSIZE,np.zeros(len(TESTED_BATCHSIZE)),color=colors[i]) # basex=2,basey=10,
     plt.axhline(tp[1],color=colors[i],label=label)
 plt.ylabel("Enc/sec with loadKey")
 plt.xlabel("Batch size")
