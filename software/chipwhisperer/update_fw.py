@@ -1,7 +1,9 @@
 import chipwhisperer as cw
 
+ORDER=2
+
 print(" You need first to short J5 and reset\n\n")
-fw_path = "../../hardware/victims/cw305_artixtarget/fw/sam3u/CW305_SAM3U_FW/build/CW305_SAM3UFW.bin"
+fw_path = "../../hardware/victims/cw305_artixtarget/fw/sam3u/CW305_SAM3U_FW/build/CW305_SAM3UFWo%d.bin" % ORDER
 # fw_path = "../../hardware/victims/cw305_artixtarget/fw/sam3u/CW305_SAM3U_FW/build/CW305_SAM3UFW.bin"
 programmer = cw.SAMFWLoader(scope=None)
 programmer.program("COM7", fw_path)

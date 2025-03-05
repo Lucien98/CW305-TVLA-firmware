@@ -31,14 +31,9 @@ def get_umsk_data(data, order):
     data_big = bytes(data_little)
     return data_big
 
-# Functional testing
-NTEST = 100
-MBATCHSIZE = 2048
+ORDER = 2
 
-# Benchmark settings
-TESTED_BATCHSIZE = 2**np.arange(1,11) 
-
-bitstream_path = "E:/2025/SMAesH-challenge/fpga_designs/SMAesH/cw305_ucg_target/cw305_ucg_target.runs/impl_1/cw305_top.bit"
+bitstream_path = "E:/2025/SMAesH-challenge/fpga_designs/SMAesH/cw305_ucg_target/cw305_ucg_target.runs/impl_1/cw305_top_trig_wrng_o%d.bit" % ORDER
 
 print("####################")
 print("# Programming the target with default bitsteam")
@@ -47,6 +42,10 @@ print(bitstream_path)
 target = CW305()
 target.con(bsfile=bitstream_path, force=False)
 
+FpgaClkFreq=10.0E6 #1.5625E6
+target.pll.pll_outfreq_set(FpgaClkFreq, 1)
+target.pll.pll_outfreq_set(10e6, 0)
+
 target.clkusbautooff = True
 target.clksleeptime = 1
 
@@ -54,11 +53,7 @@ print("####################")
 print("# Functional testing")
 print("####################")
 
-ORDER = 1
-
-
-
-nbatch = 100
+nbatch = 5000
 nstate = 2
 init_key=np.zeros([nstate, 16*(ORDER + 1)],dtype=np.uint8)
 init_pt=np.zeros([nstate, 10 + 16*(ORDER + 1)],dtype=np.uint8)
@@ -71,6 +66,7 @@ if nstate != 1:
     flags_key[1,:] = 1
 
 seed=0xd8fdc297
+seed=None
 for i in range(ORDER):
     if nstate == 1: break
     for j in range(16):
@@ -82,12 +78,18 @@ for i in range(ORDER):
 # print(init_key)
 # print(flags_key)
 # print(flags_pt)
+gen_settings=True
+gen_settings=False
+key_used,pt_used,state_used = target.batchRun(nbatch, nstate, init_key, init_pt, flags_key, flags_pt, refreshes, gen_settings=gen_settings, seed=seed)#
+## order 1: 3.4, order 2: 5.6
+if ORDER == 1:
+    time.sleep(3.4)
+if ORDER == 2:
+    time.sleep(5.6)
 
-key_used,pt_used,state_used = target.batchRun(nbatch, nstate, init_key, init_pt, flags_key, flags_pt, refreshes)#, seed=seed
-
-last_ct_shares = target.readOutput()
+last_ct_shares = target.readOutput(ORDER)
 last_ct_shares = bytes(last_ct_shares)
-last_ct = xorbytes(last_ct_shares, 1)
+last_ct = xorbytes(last_ct_shares, ORDER)
 printBytes("last_ct_shares = ", bytes(reversed(last_ct_shares)))
 printBytes("last_ct = ", last_ct)
 printBytes("last_key_used = ", bytes(reversed(key_used[-1])))
@@ -109,3 +111,4 @@ printBytes("ciphertext from local:    ", umsk_ciphertext)
 printBytes("plaintext from local:    ", umsk_plaintext)
 printBytes("key from local:    ", umsk_key)
 
+assert (hw_ciphertext == umsk_ciphertext)

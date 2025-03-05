@@ -253,9 +253,9 @@ class CW305(TargetTemplate):
 
     isDone = camel_case_deprecated(is_done)
 
-    def readOutput(self):
+    def readOutput(self,order):
         """"Read output from FPGA"""
-        data = self.fpga_read(0x200, 32)
+        data = self.fpga_read(0x200, 16*(order+1))
         # data = data[::-1]
         #self.newInputData.emit(util.list2hexstr(data))
         return data
@@ -380,6 +380,7 @@ class CW305(TargetTemplate):
             flags_pt=numpy.zeros([1,16],dtype=numpy.uint8),
             refreshes=[],
             seed=None,
+            gen_settings=False,
             delay_status_loop=50
             ):
         """
@@ -562,7 +563,6 @@ class CW305(TargetTemplate):
                 flags_key[i,:].astype(bool),
                 flags_pt[i,:].astype(bool)
                 ))
-        # print("")
         # Add the refresh encoding
         ref_encoding = encode_refreshes(refreshes,key_size)
         dpay.extend(ref_encoding)
@@ -581,33 +581,38 @@ class CW305(TargetTemplate):
             ))
         data.extend(packuint32(delay_status_loop_4B))
         data.extend(packuint32(seed))
-        for i, d in  enumerate(data):
-            print("0x%x" % d, end=", ")
-            if ((i + 1) % 16) == 0:
-                print()
-        print()
-        for i, d in  enumerate(dpay):
-            print("0x%x" % d, end=", ")
-            if ((i + 1) % 16) == 0:
-                print()
-        print()
+        if gen_settings:
+            print("dpay size = ", len(dpay))
+            for i, d in  enumerate(data):
+                print("0x%x" % d, end=", ")
+                if ((i + 1) % 16) == 0:
+                    print()
+            print("The following should be write to the dapy array in usb.c and be aware the size of dpay")
+            for i, d in  enumerate(dpay):
+                print("0x%x" % d, end=", ")
+                if ((i + 1) % 16) == 0:
+                    print()
+            print()
 
-        print("data size = ", len(data))
-        data.extend(dpay)
-        print("dpay size = ", len(dpay))
-        packsize = 40
-        f = lambda a:map(lambda b:a[b:b+packsize],range(0,len(a),packsize))
-        print(type(data))
+        """debug version"""
+        # print("data size = ", len(data))
+        # data.extend(dpay)
+        # print("dpay size = ", len(dpay))
+        # packsize = 40
+        # f = lambda a:map(lambda b:a[b:b+packsize],range(0,len(a),packsize))
+        # print(type(data))
 
-        print(len(data))
-        datas = f(data)
+        # print(len(data))
+
+        # datas = f(data)
+        # for  i, d in enumerate(datas):
+        #     print(i, len(d))
+        #     self.sam3u_write(i*packsize,d)
+        #     time.sleep(0.67)
+        #     if i == 0: break
+
         # Write to controller
-        # self.sam3u_write(0,data)
-        for  i, d in enumerate(datas):
-            print(i, len(d))
-            self.sam3u_write(i*packsize,d)
-            time.sleep(0.67)
-            if i == 0: break
+        self.sam3u_write(0,data)
 
         #### Predict values
         state_used = numpy.zeros([1,nbatch],dtype=numpy.uint8)
@@ -625,8 +630,12 @@ class CW305(TargetTemplate):
                 [prng_state,rndb,rng_buf_idx] = prng_byte_aes(rng_buf_idx,prng_state,aes_obj)
                 if rndb < rej_threshold:
                     break
+            
             state_idx = rndb % nstate
             state_used[0,c] = state_idx
+            
+            # print("state_idx = ", state_idx)
+            # print("rndb = ", rndb)
             
             # Generate KEY
             for kbi in range(key_size):
